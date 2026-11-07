@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        terminateDuplicateInstances()
 
         overlay = OverlayPanel()
         pipeline = Pipeline(settings: settings, overlay: overlay)
@@ -104,33 +105,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func promptForPermission() {
-        while true {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "GameLens 需要「屏幕录制」权限"
+        alert.informativeText = """
+        读取画面里的文字必须要有这个权限。
+
+        1. 点「打开系统设置」，在 隐私与安全性 › 屏幕录制 里勾选 GameLens
+        2. 回到这里点「已授权，重新检查」
+        3. 如果仍然不生效，请退出并重新打开 GameLens
+        """
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "已授权，重新检查")
+        alert.addButton(withTitle: "稍后")
+        alert.window.level = .floating
+        alert.window.makeKeyAndOrderFront(nil)
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            openScreenRecordingSettings()
+        case .alertSecondButtonReturn:
             if CGPreflightScreenCaptureAccess() {
                 permissionReady()
-                return
+            } else {
+                let note = NSAlert()
+                note.messageText = "系统还没放行"
+                note.informativeText = "请先在系统设置里勾选 GameLens，然后**退出并重新打开本 App**。\n\n菜单栏图标 → 退出 GameLens。"
+                note.addButton(withTitle: "好")
+                note.window.level = .floating
+                note.runModal()
             }
-            NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.messageText = "GameLens 需要「屏幕录制」权限"
-            alert.informativeText = """
-            读取游戏画面里的台词必须要有这个权限。
+        default:
+            break
+        }
+    }
 
-            1. 点「打开系统设置」，在 隐私与安全性 › 屏幕录制 里勾选 GameLens
-            2. 回到这里点「已授权，重新检查」
-            3. 如果仍然不生效，请退出并重新打开 GameLens
-            """
-            alert.addButton(withTitle: "打开系统设置")
-            alert.addButton(withTitle: "已授权，重新检查")
-            alert.addButton(withTitle: "稍后")
+    /// 只允许跑一个实例：重复启动时把旧的关掉，避免两个悬浮窗互相打架。
+    private func terminateDuplicateInstances() {
+        guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { return }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != me }
+        guard !others.isEmpty else { return }
 
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                openScreenRecordingSettings()
-            case .alertSecondButtonReturn:
-                continue
-            default:
-                return
-            }
+        for app in others { app.terminate() }
+        let deadline = Date().addingTimeInterval(1.5)
+        while Date() < deadline, others.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        for app in others where !app.isTerminated {
+            app.forceTerminate()
         }
     }
 
