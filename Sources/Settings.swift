@@ -50,6 +50,9 @@ struct HotKeyPreset: Hashable, Identifiable {
 
     static var defaultValue: HotKeyPreset { all[0] }
 
+    /// 退出快捷键，固定 ⌃⌥Q（kVK_ANSI_Q = 12，control 4096 + option 2048）
+    static let quit = HotKeyPreset(keyCode: 12, carbonModifiers: 6144, label: "⌃ ⌥ Q")
+
     static func match(keyCode: UInt32, modifiers: UInt32) -> HotKeyPreset? {
         all.first { $0.keyCode == keyCode && $0.carbonModifiers == modifiers }
     }

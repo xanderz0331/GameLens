@@ -21,6 +21,55 @@ protocol TranslationEngine {
     func translate(_ text: String, source: String, target: String, notes: Bool) async throws -> String
 }
 
+
+// MARK: - 网络层：系统代理坏了就自动切直连
+
+/// 很多 Mac 上开着系统代理但代理本身是死的（Clash 挂了、节点失效），
+/// URLSession 会困在代理里报 -1200。这里先走系统代理，失败立刻改走直连并记住。
+enum NetClient {
+    private static var mode: Int? = nil   // nil = 未探测, 0 = 系统代理, 1 = 直连
+    private static let lock = NSLock()
+
+    private static let systemSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 15
+        return URLSession(configuration: config)
+    }()
+
+    private static let directSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [:]   // 空字典 = 不用代理
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 15
+        return URLSession(configuration: config)
+    }()
+
+    static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        lock.lock()
+        let known = mode
+        lock.unlock()
+
+        if known == 1 { return try await directSession.data(for: request) }
+        if known == 0 { return try await systemSession.data(for: request) }
+
+        do {
+            let result = try await systemSession.data(for: request)
+            lock.lock(); mode = 0; lock.unlock()
+            return result
+        } catch {
+            let result = try await directSession.data(for: request)
+            lock.lock(); mode = 1; lock.unlock()
+            NSLog("[GameLens] 系统代理不可用，已切换到直连")
+            return result
+        }
+    }
+
+    static func reset() {
+        lock.lock(); mode = nil; lock.unlock()
+    }
+}
+
 // MARK: - 语言代码
 
 enum LangCode {
@@ -96,11 +145,11 @@ struct GoogleEngine: TranslationEngine {
         }
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = 8
+        request.timeoutInterval = 4
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
                          forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetClient.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw TranslationFailure.message("Google 返回 HTTP \(http.statusCode)，可能被网络环境拦截。")
         }
@@ -117,6 +166,45 @@ struct GoogleEngine: TranslationEngine {
             throw TranslationFailure.message("Google 没有返回译文。")
         }
         return translated
+    }
+}
+
+
+// MARK: - MyMemory（免密钥，国内通常可直连）
+
+struct MyMemoryEngine: TranslationEngine {
+    var displayName: String { "MyMemory" }
+    var supportsNotes: Bool { false }
+
+    func translate(_ text: String, source: String, target: String, notes: Bool) async throws -> String {
+        let pair = "\(LangCode.google(source))|\(LangCode.google(target))"
+        let encoded = text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? text
+        let pairEncoded = pair.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? pair
+        guard let url = URL(string: "https://api.mymemory.translated.net/get?q=\(encoded)&langpair=\(pairEncoded)") else {
+            throw TranslationFailure.message("MyMemory 地址不合法")
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await NetClient.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw TranslationFailure.message("MyMemory 不可用")
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = json["responseData"] as? [String: Any],
+              let translated = payload["translatedText"] as? String else {
+            throw TranslationFailure.message("MyMemory 返回内容无法解析")
+        }
+        let cleaned = translated.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else {
+            throw TranslationFailure.message("MyMemory 返回空译文")
+        }
+        if cleaned.contains("MYMEMORY WARNING") {
+            throw TranslationFailure.message("MyMemory 今日免费额度已用完")
+        }
+        return cleaned
     }
 }
 
@@ -148,7 +236,7 @@ struct DeepLEngine: TranslationEngine {
         if source != target { body += "&source_lang=\(LangCode.deepl(source))" }
         request.httpBody = body.data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetClient.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw TranslationFailure.message("DeepL 没有响应。")
         }
@@ -224,7 +312,7 @@ struct OpenAIEngine: TranslationEngine {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetClient.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw TranslationFailure.message("自定义 API 没有响应。")
         }
@@ -262,21 +350,41 @@ final class AutoEngine: TranslationEngine {
     var displayName: String { "自动" }
     var supportsNotes: Bool { false }
 
-    private var appleUnavailable = false
+    private var preferred: TranslationEngine?
 
-    func translate(_ text: String, source: String, target: String, notes: Bool) async throws -> String {
-        if !appleUnavailable {
-            do {
-                return try await AppleOfflineEngine().translate(text, source: source, target: target, notes: notes)
-            } catch {
-                appleUnavailable = true
-                NSLog("[GameLens] Apple 离线翻译不可用，自动切到 Google：\(error.localizedDescription)")
-            }
-        }
-        return try await GoogleEngine().translate(text, source: source, target: target, notes: notes)
+    private var candidates: [TranslationEngine] {
+        // 顺序：离线优先（零延迟、不依赖网络）→ 国内可直连 → 最后才试 Google
+        [AppleOfflineEngine(), MyMemoryEngine(), GoogleEngine()]
     }
 
-    func resetFallback() { appleUnavailable = false }
+    func translate(_ text: String, source: String, target: String, notes: Bool) async throws -> String {
+        // 上次成功的通道优先复用，避免每次都从 Apple 开始试探
+        if let preferred {
+            if let result = try? await preferred.translate(text, source: source, target: target, notes: notes) {
+                return result
+            }
+            self.preferred = nil
+        }
+
+        var lastError: Error = TranslationFailure.message("没有可用的翻译通道")
+        for engine in candidates {
+            for attempt in 0..<2 {
+                do {
+                    let result = try await engine.translate(text, source: source, target: target, notes: notes)
+                    preferred = engine
+                    NSLog("[GameLens] 翻译通道：\(engine.displayName)")
+                    return result
+                } catch {
+                    lastError = error
+                    FileHandle.standardError.write("[通道失败] \(engine.displayName) #\(attempt + 1): \(error.localizedDescription)\n".data(using: .utf8)!)
+                    if attempt == 0 { try? await Task.sleep(nanoseconds: 300_000_000) }
+                }
+            }
+        }
+        throw lastError
+    }
+
+    func resetFallback() { preferred = nil }
 }
 
 // MARK: - 工厂

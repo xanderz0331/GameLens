@@ -26,6 +26,7 @@ final class Pipeline {
     private var candidateText = ""
     private var candidateNormalized = ""
     private var candidateCount = 0
+    private var lastLoggedText = ""
     private var autoHideTask: Task<Void, Never>?
 
     init(settings: Settings, overlay: OverlayPanel) {
@@ -214,7 +215,13 @@ final class Pipeline {
     private func handle(_ raw: String) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = normalizeForCompare(text)
+        if normalized != lastLoggedText {
+            lastLoggedText = normalized
+            NSLog("[GameLens] OCR 读到：%@", text)
+        }
         guard normalized.count >= 2 else { return }
+        // 过滤 OCR 垃圾行（窗口按钮、边框之类，比如 ".#X .#X"）
+        guard looksLikeDialogue(text) else { return }
 
         if normalized == committedNormalized {
             candidateCount = 0
@@ -233,6 +240,17 @@ final class Pipeline {
         committedNormalized = normalized
         candidateCount = 0
         translateAndShow(candidateText)
+    }
+
+    /// 至少要有 4 个字母，且字母不少于数字，才算是一句台词
+    private func looksLikeDialogue(_ text: String) -> Bool {
+        var letters = 0
+        var digits = 0
+        for scalar in text.unicodeScalars {
+            if CharacterSet.letters.contains(scalar) { letters += 1 }
+            else if CharacterSet.decimalDigits.contains(scalar) { digits += 1 }
+        }
+        return letters >= 4 && letters >= digits
     }
 
     private func translateAndShow(_ text: String) {

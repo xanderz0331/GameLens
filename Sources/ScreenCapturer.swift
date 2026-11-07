@@ -10,7 +10,7 @@ enum CaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "还没有「屏幕录制」权限。请在 系统设置 › 隐私与安全性 › 屏幕录制 里勾选 GameLens，然后重新打开 GameLens。"
+            return "没有屏幕录制权限。系统设置 › 隐私与安全性 › 屏幕录制 → 勾选 GameLens → 重启 App"
         case .displayNotFound:
             return "找不到对应的显示器，请重新框选识别区域。"
         case .failed(let message):
@@ -30,15 +30,26 @@ final class ScreenCapturer {
         if let cachedContent, Date().timeIntervalSince(cachedAt) < cacheLifetime {
             return cachedContent
         }
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            cachedContent = content
-            cachedAt = Date()
-            return content
-        } catch {
-            cachedContent = nil
+        // 抓屏偶发失败很常见（刚启动、切显示器、系统忙），重试几次再判定
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                cachedContent = content
+                cachedAt = Date()
+                return content
+            } catch {
+                lastError = error
+                if attempt < 2 { try? await Task.sleep(nanoseconds: 250_000_000) }
+            }
+        }
+        cachedContent = nil
+
+        // 只有真正没有授权时才说"没有权限"，其它错误原样报出来
+        if !CGPreflightScreenCaptureAccess() {
             throw CaptureError.permissionDenied
         }
+        throw CaptureError.failed(lastError?.localizedDescription ?? "未知错误")
     }
 
     func capture(_ region: CaptureRegion) async throws -> CGImage {

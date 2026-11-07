@@ -1,7 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 
-private var gHotKeyTrigger: ((UInt32) -> Void)?
+private var gHotKeyTriggers: [UInt32: () -> Void] = [:]
 
 private func gameLensHotKeyHandler(_ nextHandler: EventHandlerCallRef?,
                                    _ event: EventRef?,
@@ -15,18 +15,20 @@ private func gameLensHotKeyHandler(_ nextHandler: EventHandlerCallRef?,
                                    MemoryLayout<EventHotKeyID>.size,
                                    nil,
                                    &hotKeyID)
-    if status == noErr { gHotKeyTrigger?(hotKeyID.id) }
+    if status == noErr { gHotKeyTriggers[hotKeyID.id]?() }
     return noErr
 }
 
 /// 全局热键（Carbon RegisterEventHotKey，不需要辅助功能权限，不会打断游戏输入）
 final class GlobalHotKey {
+    private let id: UInt32
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var currentPreset: HotKeyPreset?
     var onTrigger: (() -> Void)?
 
-    init() {
+    init(id: UInt32) {
+        self.id = id
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(),
@@ -35,12 +37,13 @@ final class GlobalHotKey {
                             &spec,
                             nil,
                             &eventHandler)
-        gHotKeyTrigger = { [weak self] _ in self?.onTrigger?() }
+        gHotKeyTriggers[id] = { [weak self] in self?.onTrigger?() }
     }
 
     deinit {
         unregister()
         if let eventHandler { RemoveEventHandler(eventHandler) }
+        gHotKeyTriggers.removeValue(forKey: id)
     }
 
     @discardableResult
@@ -49,7 +52,7 @@ final class GlobalHotKey {
         unregister()
 
         var ref: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: OSType(0x474C4E53), id: 1) // 'GLNS'
+        let hotKeyID = EventHotKeyID(signature: OSType(0x474C4E53), id: id) // 'GLNS'
         let status = RegisterEventHotKey(UInt32(preset.keyCode),
                                          UInt32(preset.carbonModifiers),
                                          hotKeyID,

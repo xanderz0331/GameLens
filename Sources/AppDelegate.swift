@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlay: OverlayPanel!
     private var pipeline: Pipeline!
     private var hotKey: GlobalHotKey!
+    private var quitHotKey: GlobalHotKey!
     private var menuBar: MenuBarController!
     private var settingsController: SettingsWindowController!
     private let picker = RegionPickerController()
@@ -20,13 +21,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline = Pipeline(settings: settings, overlay: overlay)
         settingsController = SettingsWindowController(settings: settings)
 
-        hotKey = GlobalHotKey()
+        hotKey = GlobalHotKey(id: 1)
         hotKey.onTrigger = { [weak self] in
             guard let self else { return }
             self.pipeline.toggleOverlay()
             self.menuBar.refreshIcon()
         }
         _ = hotKey.register(settings.hotKey)
+
+        // ⌃⌥Q 随时退出，不用去找菜单栏图标
+        quitHotKey = GlobalHotKey(id: 2)
+        quitHotKey.onTrigger = { NSApp.terminate(nil) }
+        _ = quitHotKey.register(HotKeyPreset.quit)
 
         menuBar = MenuBarController(
             pipeline: pipeline,
@@ -90,13 +96,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 启动流程
 
+    /// 不再用 CGPreflightScreenCaptureAccess 把关（它在部分系统上会误报 false，
+    /// 导致明明有权限也永远启动不了）。这里只主动请求一次，然后无条件先把流水线跑起来；
+    /// 真的抓不到画面时，错误会显示在悬浮窗里。
     private func bootstrap() {
-        if CGPreflightScreenCaptureAccess() {
-            permissionReady()
-        } else {
+        if !CGPreflightScreenCaptureAccess(),
+           !UserDefaults.standard.bool(forKey: "askedScreenRecording") {
+            UserDefaults.standard.set(true, forKey: "askedScreenRecording")
             _ = CGRequestScreenCaptureAccess()
-            promptForPermission()
         }
+        permissionReady()
     }
 
     private func permissionReady() {
@@ -105,42 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menuBar.refreshIcon()
         } else {
             showWelcome(firstLaunch: true)
-        }
-    }
-
-    private func promptForPermission() {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "GameLens 需要「屏幕录制」权限"
-        alert.informativeText = """
-        读取画面里的文字必须要有这个权限。
-
-        1. 点「打开系统设置」，在 隐私与安全性 › 屏幕录制 里勾选 GameLens
-        2. 回到这里点「已授权，重新检查」
-        3. 如果仍然不生效，请退出并重新打开 GameLens
-        """
-        alert.addButton(withTitle: "打开系统设置")
-        alert.addButton(withTitle: "已授权，重新检查")
-        alert.addButton(withTitle: "稍后")
-        alert.window.level = .floating
-        alert.window.makeKeyAndOrderFront(nil)
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            openScreenRecordingSettings()
-        case .alertSecondButtonReturn:
-            if CGPreflightScreenCaptureAccess() {
-                permissionReady()
-            } else {
-                let note = NSAlert()
-                note.messageText = "系统还没放行"
-                note.informativeText = "请先在系统设置里勾选 GameLens，然后**退出并重新打开本 App**。\n\n菜单栏图标 → 退出 GameLens。"
-                note.addButton(withTitle: "好")
-                note.window.level = .floating
-                note.runModal()
-            }
-        default:
-            break
         }
     }
 

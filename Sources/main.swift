@@ -4,6 +4,7 @@ import AppKit
 var retainedDelegate: AnyObject?
 
 let commandLineHandled = CLI.handleIfNeeded(CommandLine.arguments)
+NSLog("[GameLens] 启动标记 v2")
 
 // 顶层代码本来就跑在主线程，这里显式声明给编译器看。
 MainActor.assumeIsolated {

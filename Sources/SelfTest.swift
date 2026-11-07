@@ -169,6 +169,15 @@ enum CLI {
             exit(SelfTest.renderOverlay(to: arguments[index + 1]) ? 0 : 2)
         }
 
+        if arguments.contains("--diagnose") {
+            _ = NSApplication.shared
+            Task {
+                await Diagnostics.run()
+                exit(0)
+            }
+            return true
+        }
+
         if arguments.contains("--ocr-bench") {
             _ = NSApplication.shared
             exit(SelfTest.benchOCR() ? 0 : 4)
@@ -185,5 +194,43 @@ enum CLI {
         }
 
         return false
+    }
+}
+
+enum Diagnostics {
+    static func run() async {
+        print("=== GameLens 诊断 ===")
+        print("1) 预检权限 CGPreflightScreenCaptureAccess: \(CGPreflightScreenCaptureAccess())")
+
+        guard let region = CaptureRegion.load() else {
+            print("2) 识别区域: ❌ 没有保存的区域（从没框选成功）")
+            return
+        }
+        print("2) 识别区域: \(region.description)  比例 \(region.scale)x")
+
+        let capturer = ScreenCapturer()
+        do {
+            let started = Date()
+            let image = try await capturer.capture(region)
+            print("3) 抓屏: ✅ 成功 \(image.width)×\(image.height)  用时 \(Int(Date().timeIntervalSince(started) * 1000))ms")
+
+            let result = try OCR.recognize(image)
+            print("4) OCR: \(result.lines.count) 行 / 置信度 \(String(format: "%.2f", result.averageConfidence))")
+            print("   文本: 「\(result.text.prefix(120))」")
+
+            if !result.text.isEmpty {
+                let engine = EngineFactory.shared.engine(for: Settings.shared)
+                do {
+                    let translated = try await engine.translate(result.text, source: "en", target: "zh-Hans", notes: false)
+                    print("5) 翻译(\(engine.displayName)): ✅ \(translated.prefix(80))")
+                } catch {
+                    print("5) 翻译: ❌ \(error.localizedDescription)")
+                }
+            } else {
+                print("5) 翻译: 跳过（OCR 没读到文字，说明框选的区域现在是空的/纯色）")
+            }
+        } catch {
+            print("3) 抓屏: ❌ \(error.localizedDescription)")
+        }
     }
 }

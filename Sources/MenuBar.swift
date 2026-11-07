@@ -126,7 +126,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        add(menu, title: "退出 GameLens（彻底关闭）") {
+        add(menu, title: "退出 GameLens（彻底关闭）　⌃⌥Q") {
             NSApp.terminate(nil)
         }
     }
