@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.menuBar?.refreshIcon()
         }
 
+        pipeline.onNeedRegion = { [weak self] in
+            self?.beginRegionPick()
+        }
+
         settingsObserver = NotificationCenter.default.addObserver(
             forName: .gameLensSettingsChanged,
             object: nil,

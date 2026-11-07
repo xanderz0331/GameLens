@@ -17,6 +17,8 @@ final class Pipeline {
 
     var region: CaptureRegion?
     var onStateChange: (() -> Void)?
+    /// 没框选区域时按快捷键 → 走框选流程
+    var onNeedRegion: (() -> Void)?
 
     private var loop: Task<Void, Never>?
     private var translateSequence = 0
@@ -36,8 +38,6 @@ final class Pipeline {
     func start() {
         guard region != nil, loop == nil else { return }
         isRunning = true
-
-        if !isOverlayHidden { overlay.show(animated: false) }
 
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -103,16 +103,32 @@ final class Pipeline {
     // MARK: - 悬浮窗
 
     func toggleOverlay() {
-        isOverlayHidden.toggle()
+        // 还没框选区域 → 直接进入框选，而不是静默无事
+        guard region != nil else {
+            onNeedRegion?()
+            return
+        }
+
         if isOverlayHidden {
-            autoHideTask?.cancel()
-            overlay.hide()
-        } else {
-            overlay.update(source: lastSource, target: lastTranslation, region: region, settings: settings)
+            isOverlayHidden = false
+            overlay.update(source: lastSource, target: displayText(), region: region, settings: settings)
             overlay.show()
             scheduleAutoHide()
+        } else {
+            isOverlayHidden = true
+            autoHideTask?.cancel()
+            overlay.hide()
         }
         onStateChange?()
+    }
+
+    /// 快捷键呼出时到底显示什么：有译文给译文，有错误给错误，都没有就给提示
+    private func displayText() -> String {
+        if !lastTranslation.isEmpty { return lastTranslation }
+        if let lastError { return "⚠︎ " + lastError }
+        if isPaused { return "⏸ 已暂停识别" }
+        if !isRunning { return "⚠︎ 识别没有启动" }
+        return "👀 正在等台词出现…"
     }
 
     func showOverlayForAWhile() {
@@ -180,8 +196,14 @@ final class Pipeline {
             handle(result.text)
         } catch {
             let message = error.localizedDescription
+            NSLog("[GameLens] 抓屏失败：\(message)")
             if message != lastError {
+                let firstFailure = lastError == nil
                 lastError = message
+                if firstFailure, !isOverlayHidden {
+                    overlay.update(source: "", target: "⚠︎ " + message, region: region, settings: settings)
+                    overlay.show(animated: false)
+                }
                 onStateChange?()
             }
         }

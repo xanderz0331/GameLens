@@ -33,8 +33,25 @@ if [ -f "AppIcon.icns" ]; then
   cp AppIcon.icns "${APP_DIR}/Contents/Resources/AppIcon.icns"
 fi
 
-echo "==> 临时签名（让系统能稳定记住屏幕录制权限）"
-codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP_DIR}" 2>/dev/null || true
+echo "==> 签名"
+# 用固定的本地证书签名：签名身份不随重编译改变，屏幕录制授权才不会每次失效
+SIGN_KC="$HOME/Library/Keychains/gamelens-sign.keychain-db"
+SIGN_ID="GameLens Local Signing"
+if security find-identity -p codesigning "$SIGN_KC" 2>/dev/null | grep -q "GameLens Local Signing" \
+   || [ -f "signing/sign2.p12" ]; then
+  if [ -f "signing/sign2.p12" ] && ! security find-certificate -c "$SIGN_ID" "$SIGN_KC" >/dev/null 2>&1; then
+    security create-keychain -p "" "$SIGN_KC" 2>/dev/null || true
+    security unlock-keychain -p "" "$SIGN_KC" 2>/dev/null || true
+    security import signing/sign2.p12 -k "$SIGN_KC" -P gamelens -A >/dev/null 2>&1 || true
+    security set-key-partition-list -S apple-tool:,apple: -s -k "" "$SIGN_KC" >/dev/null 2>&1 || true
+  fi
+  codesign --force --keychain "$SIGN_KC" --sign "$SIGN_ID" --identifier "${BUNDLE_ID}" "${APP_DIR}" 2>/dev/null \
+    && echo "    已用固定证书签名" \
+    || { codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP_DIR}"; echo "    回退到 ad-hoc 签名"; }
+else
+  codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP_DIR}"
+  echo "    已用 ad-hoc 签名（权限会在下次重编译后失效）"
+fi
 
 echo "==> 完成：${APP_DIR}"
 du -sh "${APP_DIR}"
