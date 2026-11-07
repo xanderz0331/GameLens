@@ -62,9 +62,25 @@ final class Pipeline {
         start()
     }
 
-    func togglePause() {
-        isPaused.toggle()
+    /// 暂停 = 真的停掉抓屏线程，不是空转。
+    func pause() {
+        guard !isPaused else { return }
+        isPaused = true
+        loop?.cancel()
+        loop = nil
+        overlay.hide()
         onStateChange?()
+    }
+
+    func resume() {
+        guard isPaused else { return }
+        isPaused = false
+        start()
+        onStateChange?()
+    }
+
+    func togglePause() {
+        if isPaused { resume() } else { pause() }
     }
 
     func setRegion(_ region: CaptureRegion?) {
@@ -75,9 +91,11 @@ final class Pipeline {
         candidateCount = 0
         if region == nil {
             stop()
+            isPaused = false
             overlay.clear()
             overlay.hide()
-        } else if !isRunning {
+        } else {
+            isPaused = false
             start()
         }
     }

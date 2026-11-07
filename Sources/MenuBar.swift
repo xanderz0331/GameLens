@@ -93,7 +93,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             : "隐藏翻译字幕　(\(settings.hotKey.label))"
         add(menu, title: overlayTitle) { [unowned self] in self.pipeline.toggleOverlay() }
 
-        add(menu, title: pipeline.isPaused ? "继续识别" : "暂停识别") { [unowned self] in
+        add(menu, title: pipeline.isPaused ? "继续识别（恢复抓屏）" : "暂停识别（停止抓屏）") { [unowned self] in
             self.pipeline.togglePause()
             self.refreshIcon()
         }
@@ -126,7 +126,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        add(menu, title: "退出 GameLens") {
+        add(menu, title: "退出 GameLens（彻底关闭）") {
             NSApp.terminate(nil)
         }
     }
